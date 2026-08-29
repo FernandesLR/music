@@ -171,7 +171,7 @@ app.get("/", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend MusicPlayer rodando em http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Backend MusicPlayer rodando em http://0.0.0.0:${PORT}`);
   console.log("Use 'python -m pip install --upgrade yt-dlp' se algo falhar.");
 });
