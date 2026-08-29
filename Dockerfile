@@ -6,14 +6,19 @@ FROM node:20-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
+    python3-venv \
+    curl \
     ffmpeg \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Garante que o pip esteja funcional (curl do get-pip como fallback seguro)
+RUN python3 -m pip --version 2>/dev/null || (curl -fsSL https://bootstrap.pypa.io/get-pip.py | python3 -)
+
 WORKDIR /app
 
 # Instala o yt-dlp (driver do YouTube)
-RUN pip3 install --no-cache-dir --upgrade yt-dlp
+RUN python3 -m pip install --no-cache-dir --break-system-packages --upgrade yt-dlp
 
 # Copia e instala dependencias do Node
 COPY package*.json ./
