@@ -88,6 +88,8 @@ app.get("/search", (req, res) => {
 });
 
 // Baixa uma musica (por url ou id) como MP3 e salva em /music
+// Tenta varios players do YouTube em sequencia (fallback) para contornar
+// o bloqueio anti-bot que o YouTube aplica em IPs de datacenter.
 app.get("/download", (req, res) => {
   let url = (req.query.url || "").trim();
   if (!url) {
@@ -98,33 +100,55 @@ app.get("/download", (req, res) => {
 
   const idMatch = url.match(/[?&]v=([\w-]{11})/) || url.match(/([\w-]{11})$/);
   const videoId = idMatch ? idMatch[1] : crypto.randomBytes(6).toString("hex");
-
   const safeId = videoId.replace(/[^a-zA-Z0-9_-]/g, "");
-  const outputTemplate = path.join(MUSIC_DIR, safeId + ".%(ext)s");
 
-  const args = [
-    url,
-    "-x",
-    "--audio-format",
-    "mp3",
-    "-o",
-    outputTemplate,
-    "--no-playlist",
-    "--no-warnings",
-  ];
+  // Estrategias de players do YouTube, da mais permissiva a menos.
+  const playerClients = [null, "tv", "web_embedded", "ios"];
 
   const ffdir = ffmpegDir();
-  const fullArgs = ffdir ? args.concat(["--ffmpeg-location", ffdir]) : args;
 
-  runYt(fullArgs, { encoding: "utf8", timeout: 180000 }, (err, stdout, stderr) => {
-    const mp3 = path.join(MUSIC_DIR, safeId + ".mp3");
-    if (!fs.existsSync(mp3)) {
+  function attempt(i, lastError) {
+    if (i >= playerClients.length) {
       return res
         .status(500)
-        .json({ error: "Falha no download: " + (stderr || (err && err.message)) });
+        .json({ error: "Falha no download: " + (lastError || "erro desconhecido") });
     }
-    res.download(mp3, safeId + ".mp3");
-  });
+
+    const outputTemplate = path.join(MUSIC_DIR, safeId + ".%(ext)s");
+    const args = [
+      url,
+      "-x",
+      "--audio-format",
+      "mp3",
+      "-o",
+      outputTemplate,
+      "--no-playlist",
+      "--no-warnings",
+    ];
+
+    if (playerClients[i]) {
+      args.push("--extractor-args", "youtube:player_client=" + playerClients[i]);
+    }
+    if (ffdir) {
+      args.push("--ffmpeg-location", ffdir);
+    }
+
+    runYt(args, { encoding: "utf8", timeout: 180000 }, (err, stdout, stderr) => {
+      const mp3 = path.join(MUSIC_DIR, safeId + ".mp3");
+      if (fs.existsSync(mp3)) {
+        // limpa tentativas anteriores em outros formatos
+        for (const f of fs.readdirSync(MUSIC_DIR)) {
+          if (f.startsWith(safeId) && !f.endsWith(".mp3")) {
+            try { fs.unlinkSync(path.join(MUSIC_DIR, f)); } catch (e) {}
+          }
+        }
+        return res.download(mp3, safeId + ".mp3");
+      }
+      attempt(i + 1, stderr || (err && err.message) || "erro");
+    });
+  }
+
+  attempt(0, null);
 });
 
 // Lista as musicas salvas localmente (CRUD - Read)
