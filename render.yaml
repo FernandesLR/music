@@ -1,0 +1,16 @@
+# render.yaml — configuração do Render (plataforma gratuita)
+# Basta conectar o repositório no Render e ele cria o serviço automaticamente.
+
+services:
+  - type: web
+    name: musicplayer-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      # Crie uma senha qualquer e coloque aqui (opcional, mas recomendado)
+      # Ela sera usada pelo app na configuracao da API_KEY.
+      - key: API_KEY
+        sync: false  # vc define o valor na dashboard de variaveis
+      - key: PORT
+        value: 4000

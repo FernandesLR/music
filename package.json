@@ -1,0 +1,15 @@
+{
+  "name": "musicplayer-backend",
+  "version": "1.0.0",
+  "description": "Backend local para pesquisar e baixar musicas do YouTube",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "install-yt": "python -m pip install --upgrade yt-dlp"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "youtube-dl-exec": "^3.0.11"
+  }
+}
