@@ -12,21 +12,6 @@ const MUSIC_DIR = path.join(__dirname, "music");
 const isWindows = process.platform === "win32";
 const PYTHON = isWindows ? "python" : "python3";
 
-// Localiza o diretorio do ffmpeg local (Windows). No Linux o ffmpeg vem via PATH.
-function ffmpegDir() {
-  if (!isWindows) return null;
-  const base = path.join(__dirname, "ffmpeg");
-  try {
-    const sub = fs.readdirSync(base).find((d) =>
-      fs.existsSync(path.join(base, d, "bin", "ffmpeg.exe"))
-    );
-    if (sub) return path.join(base, sub, "bin");
-  } catch (e) {
-    /* ignore */
-  }
-  return null;
-}
-
 app.use(cors());
 app.use(express.json());
 
@@ -51,17 +36,17 @@ function runYt(args, opts, cb) {
   execFile(PYTHON, ["-m", "yt_dlp", ...args], opts, cb);
 }
 
-// Busca musicas no YouTube usando a busca integrada do yt-dlp (ytsearch)
+// Busca musicas no SoundCloud (nao bloqueia IP de datacenter como o YouTube)
 app.get("/search", (req, res) => {
   const q = (req.query.q || "").trim();
   if (!q) return res.status(400).json({ error: "Parametro 'q' obrigatorio" });
 
   const args = [
-    "ytsearch5:" + q,
+    "scsearch10:" + q,
     "--flat-playlist",
     "--no-warnings",
     "--print",
-    "%(id)s\t%(title)s\t%(duration)s\t%(channel)s",
+    "%(webpage_url)s\t%(title)s\t%(duration)s\t%(uploader)s",
   ];
 
   runYt(args, { encoding: "utf8", timeout: 40000 }, (err, stdout, stderr) => {
@@ -75,91 +60,76 @@ app.get("/search", (req, res) => {
 
     const results = lines.map((line) => {
       const parts = line.split("\t");
+      const url = parts[0];
+      const slug = url.split("/").filter(Boolean).pop() || "";
       return {
-        id: parts[0],
+        id: slug.replace(/[^a-zA-Z0-9_-]/g, "") || crypto.randomBytes(6).toString("hex"),
         title: parts[1],
         duration: parts[2] || null,
         channel: parts[3] || null,
-        url: "https://www.youtube.com/watch?v=" + parts[0],
+        url: url,
       };
     });
     res.json({ results });
   });
 });
 
-// Baixa uma musica (por url ou id) como MP3 e salva em /music
-// Tenta varios players do YouTube em sequencia (fallback) para contornar
-// o bloqueio anti-bot que o YouTube aplica em IPs de datacenter.
+// Baixa uma musica do SoundCloud por url (o id tambem pode ser passado como url)
 app.get("/download", (req, res) => {
   let url = (req.query.url || "").trim();
   if (!url) {
-    const id = (req.query.id || "").trim();
-    if (!id) return res.status(400).json({ error: "Parametro 'url' ou 'id' obrigatorio" });
-    url = "https://www.youtube.com/watch?v=" + id;
+    return res.status(400).json({ error: "Parametro 'url' obrigatorio (url do SoundCloud)" });
   }
 
-  const idMatch = url.match(/[?&]v=([\w-]{11})/) || url.match(/([\w-]{11})$/);
-  const videoId = idMatch ? idMatch[1] : crypto.randomBytes(6).toString("hex");
-  const safeId = videoId.replace(/[^a-zA-Z0-9_-]/g, "");
+  // Um nome de arquivo estavel baseado na url
+  const safeId = crypto
+    .createHash("sha1")
+    .update(url)
+    .digest("hex")
+    .substring(0, 16);
 
-  // Estrategias de players do YouTube, da mais permissiva a menos.
-  const playerClients = [null, "tv", "web_embedded", "ios"];
+  const outputTemplate = path.join(MUSIC_DIR, safeId + ".%(ext)s");
 
-  const ffdir = ffmpegDir();
+  // SoundCloud ja entrega o audio; o yt-dlp baixa direto.
+  // Forcamos mp3 quando possivel sem depender de ffmpeg.
+  const args = [
+    url,
+    "-o",
+    outputTemplate,
+    "--no-playlist",
+    "--no-warnings",
+    "-f",
+    "bestaudio/best",
+  ];
 
-  function attempt(i, lastError) {
-    if (i >= playerClients.length) {
+  runYt(args, { encoding: "utf8", timeout: 180000 }, (err, stdout, stderr) => {
+    // procura qualquer arquivo gerado (mp3, m4a, ...)
+    const files = fs.existsSync(MUSIC_DIR)
+      ? fs.readdirSync(MUSIC_DIR).filter((f) => f.startsWith(safeId))
+      : [];
+    if (files.length === 0) {
       return res
         .status(500)
-        .json({ error: "Falha no download: " + (lastError || "erro desconhecido") });
+        .json({ error: "Falha no download: " + (stderr || (err && err.message)) });
     }
-
-    const outputTemplate = path.join(MUSIC_DIR, safeId + ".%(ext)s");
-    const args = [
-      url,
-      "-x",
-      "--audio-format",
-      "mp3",
-      "-o",
-      outputTemplate,
-      "--no-playlist",
-      "--no-warnings",
-    ];
-
-    if (playerClients[i]) {
-      args.push("--extractor-args", "youtube:player_client=" + playerClients[i]);
-    }
-    if (ffdir) {
-      args.push("--ffmpeg-location", ffdir);
-    }
-
-    runYt(args, { encoding: "utf8", timeout: 180000 }, (err, stdout, stderr) => {
-      const mp3 = path.join(MUSIC_DIR, safeId + ".mp3");
-      if (fs.existsSync(mp3)) {
-        // limpa tentativas anteriores em outros formatos
-        for (const f of fs.readdirSync(MUSIC_DIR)) {
-          if (f.startsWith(safeId) && !f.endsWith(".mp3")) {
-            try { fs.unlinkSync(path.join(MUSIC_DIR, f)); } catch (e) {}
-          }
-        }
-        return res.download(mp3, safeId + ".mp3");
-      }
-      attempt(i + 1, stderr || (err && err.message) || "erro");
-    });
-  }
-
-  attempt(0, null);
+    // prefere mp3 se existir, senao o primeiro
+    const chosen =
+      files.find((f) => f.endsWith(".mp3")) ||
+      files.find((f) => f.endsWith(".m4a")) ||
+      files[0];
+    res.download(path.join(MUSIC_DIR, chosen), chosen);
+  });
 });
 
 // Lista as musicas salvas localmente (CRUD - Read)
 app.get("/songs", (req, res) => {
   const files = fs
     .readdirSync(MUSIC_DIR)
-    .filter((f) => f.endsWith(".mp3"))
+    .filter((f) => /\.(mp3|m4a|opus|webm)$/i.test(f))
     .map((f) => {
       const stat = fs.statSync(path.join(MUSIC_DIR, f));
       return {
-        id: path.basename(f, ".mp3"),
+        id: path.basename(f).replace(/\.[^/.]+$/, ""),
         file: f,
         size: stat.size,
         sizeMb: (stat.size / 1024 / 1024).toFixed(1),
@@ -179,9 +149,11 @@ app.get("/file/:name", (req, res) => {
 // Remove uma musica (CRUD - Delete)
 app.delete("/songs/:id", (req, res) => {
   const id = path.basename(req.params.id);
-  const filePath = path.join(MUSIC_DIR, id + ".mp3");
-  if (fs.existsSync(filePath)) {
-    fs.unlinkSync(filePath);
+  const match = fs.existsSync(MUSIC_DIR)
+    ? fs.readdirSync(MUSIC_DIR).find((f) => f.startsWith(id))
+    : null;
+  if (match) {
+    fs.unlinkSync(path.join(MUSIC_DIR, match));
     return res.json({ ok: true });
   }
   res.status(404).json({ error: "Musica nao encontrada" });
@@ -190,12 +162,11 @@ app.delete("/songs/:id", (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
-    name: "MusicPlayer Backend",
+    name: "MusicPlayer Backend (SoundCloud)",
     endpoints: ["/search", "/download", "/songs", "/file/:name", "DELETE /songs/:id"],
   });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Backend MusicPlayer rodando em http://0.0.0.0:${PORT}`);
-  console.log("Use 'python -m pip install --upgrade yt-dlp' se algo falhar.");
 });
