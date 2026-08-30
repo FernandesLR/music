@@ -16,10 +16,11 @@ app.use(cors());
 app.use(express.json());
 
 // Auth opcional: se a env API_KEY estiver definida, exige o header x-api-key
+// ou o query param ?apikey= (necessario para o MediaPlayer, que nao envia headers).
 const API_KEY = process.env.API_KEY || "";
 app.use((req, res, next) => {
   if (API_KEY) {
-    const k = req.headers["x-api-key"];
+    const k = req.headers["x-api-key"] || req.query.apikey;
     if (k !== API_KEY) {
       return res.status(401).json({ error: "API key invalida" });
     }
@@ -71,6 +72,35 @@ app.get("/search", (req, res) => {
       };
     });
     res.json({ results });
+  });
+});
+
+// Stream: resolve a URL direta do audio no SoundCloud e redireciona o player
+// para ela (streaming de verdade, com suporte a avançar/voltar na barra).
+app.get("/stream", (req, res) => {
+  let url = (req.query.url || "").trim();
+  if (!url) {
+    return res.status(400).json({ error: "Parametro 'url' obrigatorio" });
+  }
+
+  const args = [
+    url,
+    "-f",
+    "bestaudio/best",
+    "--get-url",
+    "--no-playlist",
+    "--no-warnings",
+  ];
+
+  runYt(args, { encoding: "utf8", timeout: 60000 }, (err, stdout, stderr) => {
+    if (err) {
+      return res.status(500).json({ error: "Falha no stream: " + (stderr || err.message) });
+    }
+    const direct = (stdout || "").trim().split(/\r?\n/)[0];
+    if (!direct) {
+      return res.status(500).json({ error: "URL de audio nao encontrada" });
+    }
+    res.redirect(307, direct);
   });
 });
 
