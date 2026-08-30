@@ -70,32 +70,26 @@ function doSearch(prefix, q, cb) {
   });
 }
 
-// Busca musicas. Padrao: tenta YouTube primeiro (mais musicas) e, se falhar
-// (o YouTube bloqueia IP de datacenter), cai para o SoundCloud.
-// Para forcar uma fonte: ?source=youtube ou ?source=soundcloud
+// Busca musicas. Padrao: SoundCloud com 50 resultados (catalogo amplo e que
+// nao bloqueia IP de datacenter - toca e baixa 100%).
+// Para forcar uma fonte: ?source=soundcloud (padrao) ou ?source=youtube
+// (o YouTube lista resultados mas nao extrai audio em IP de datacenter).
 app.get("/search", (req, res) => {
   const q = (req.query.q || "").trim();
   if (!q) return res.status(400).json({ error: "Parametro 'q' obrigatorio" });
 
-  const source = (req.query.source || "auto").toLowerCase();
+  const source = (req.query.source || "soundcloud").toLowerCase();
 
   const respond = (data) => {
     if (data.results && data.results.length > 0) return res.json(data);
     res.status(500).json({ error: data.error || "Sem resultados" });
   };
 
-  if (source === "soundcloud") {
-    return doSearch("scsearch10:", q, respond);
-  }
   if (source === "youtube") {
     return doSearch("ytsearch10:", q, respond);
   }
-
-  // auto: youtube primeiro, fallback soundcloud
-  doSearch("ytsearch10:", q, (ytData) => {
-    if (ytData.results && ytData.results.length > 0) return res.json(ytData);
-    doSearch("scsearch10:", q, respond);
-  });
+  // padrao: soundcloud com 50 resultados
+  return doSearch("scsearch50:", q, respond);
 });
 
 // Stream: resolve a URL direta do audio no SoundCloud e redireciona o player
