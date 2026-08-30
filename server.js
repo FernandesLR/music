@@ -37,28 +37,23 @@ function runYt(args, opts, cb) {
   execFile(PYTHON, ["-m", "yt_dlp", ...args], opts, cb);
 }
 
-// Busca musicas no SoundCloud (nao bloqueia IP de datacenter como o YouTube)
-app.get("/search", (req, res) => {
-  const q = (req.query.q || "").trim();
-  if (!q) return res.status(400).json({ error: "Parametro 'q' obrigatorio" });
-
+// Executa uma busca com o yt-dlp, retornando a lista de resultados (ou erro)
+function doSearch(prefix, q, cb) {
   const args = [
-    "scsearch10:" + q,
+    prefix + q,
     "--flat-playlist",
     "--no-warnings",
     "--print",
     "%(webpage_url)s\t%(title)s\t%(duration)s\t%(uploader)s",
   ];
-
   runYt(args, { encoding: "utf8", timeout: 40000 }, (err, stdout, stderr) => {
     if (err) {
-      return res.status(500).json({ error: "Falha na busca: " + (stderr || err.message) });
+      return cb(null, { error: "Falha na busca: " + (stderr || err.message) });
     }
     const lines = stdout
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-
     const results = lines.map((line) => {
       const parts = line.split("\t");
       const url = parts[0];
@@ -71,7 +66,35 @@ app.get("/search", (req, res) => {
         url: url,
       };
     });
-    res.json({ results });
+    cb({ results }, null);
+  });
+}
+
+// Busca musicas. Padrao: tenta YouTube primeiro (mais musicas) e, se falhar
+// (o YouTube bloqueia IP de datacenter), cai para o SoundCloud.
+// Para forcar uma fonte: ?source=youtube ou ?source=soundcloud
+app.get("/search", (req, res) => {
+  const q = (req.query.q || "").trim();
+  if (!q) return res.status(400).json({ error: "Parametro 'q' obrigatorio" });
+
+  const source = (req.query.source || "auto").toLowerCase();
+
+  const respond = (data) => {
+    if (data.results && data.results.length > 0) return res.json(data);
+    res.status(500).json({ error: data.error || "Sem resultados" });
+  };
+
+  if (source === "soundcloud") {
+    return doSearch("scsearch10:", q, respond);
+  }
+  if (source === "youtube") {
+    return doSearch("ytsearch10:", q, respond);
+  }
+
+  // auto: youtube primeiro, fallback soundcloud
+  doSearch("ytsearch10:", q, (ytData) => {
+    if (ytData.results && ytData.results.length > 0) return res.json(ytData);
+    doSearch("scsearch10:", q, respond);
   });
 });
 
